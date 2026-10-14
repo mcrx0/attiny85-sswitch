@@ -65,22 +65,87 @@ The Digispark takes 5 V from USB. Relay coils go on the same rail.
 | One SRD-05VDC relay | ~90 mA — fine, USB 2.0 allows 500 mA |
 | Four-channel opto module | ~350 mA of coil, plus opto bias — close to the limit |
 
-The USB descriptor declares 200 mA (`USB_CFG_MAX_BUS_POWER 100`, in 2 mA
-units). If you brown out, the attiny85 resets and your relays go back to OFF.
-If that is the behaviour you want, good. If not, use a separate supply for the
-coils and share only ground — and then the pull-up matters more, because the
-module is no longer held up by the Digispark's rail.
+The USB descriptor declares 100 mA (`USB_CFG_MAX_BUS_POWER 100`, whose value
+is in milliamperes; V-USB halves it because `bMaxPower` counts 2 mA units).
+Three coils at ~90 mA is ~270 mA, which is well over what is declared. A
+well-behaved host port will hold you to the declared figure, so expect a
+brown-out with all three relays energised — and the attiny85 will reset and put
+them all back OFF. If that is the behaviour you want, good. If not, use a
+separate supply for the coils and share only ground — and then the pull-up
+matters more, because the module is no longer held up by the Digispark's rail.
+
+The coil current is the whole USB budget story. The microcontroller itself
+draws single-digit milliamperes.
+
+## The current path
+
+The ATtiny85 is a switch controller, not a switch. It carries no coil current
+and never has:
+
+```
+   Digispark P0 ──[1kΩ]──┬── relay module control input
+                          │
+                        10kΩ        ← the pull-up, above
+                          │
+                         VCC
+```
+
+Inside the module, and only in a module that has one:
+
+```
+   VCC ───────┬──────────── relay coil ─────┬────── drain
+              │                              │
+              └──────────|<|───────────────  ← flyback diode
+                             gate
+                               │
+   P0 ──[1kΩ]──[gate resistor]┴── source ── GND
+              100 Ω gate
+```
+
+So the GPIO drives a gate or an opto LED, at roughly 1–2 mA. The MOSFET is the
+element that interrupts the coil current; the relay is the actuator that moves
+the contact. The firmware writes a bit and is otherwise out of the picture.
+
+The 1 kΩ gate resistor is not optional. A MOSFET gate is a capacitor, and the
+ATtiny85's output driver has finite rise time; without the resistor the gate
+edge rings on the module's wiring and can latch the MOSFET half-on. 100 nΩ at
+the gate, close to the transistor, damps it.
 
 ## Flyback
 
+The diode goes **across the coil**, cathode to +5 V, anode to the low side. It
+does not go across the relay contacts — see [Mains](#mains).
+
 - **KY-019 has a 1N4007 fitted.** Nothing to add.
 - **Opto modules have one** (1N4148 or 1N4007). Nothing to add.
-- **A bare relay needs one you add**: across the coil, cathode to +5 V, anode
-  to the low side. At 71 mA coil current both 1N4148 and 1N4007 are adequate.
+- **A bare relay needs one you add**. At 71–90 mA coil current both 1N4148 and
+  1N4007 are adequate; 1N4007 if you want margin.
 
-Practical note: the diode adds about 2 ms to coil release. Irrelevant for a
-relay you switch on human timescales, relevant if you are timing contact
-transitions.
+When the switch opens, the coil's current has nowhere to go and the voltage
+across it reverses and climbs until something gives: the diode conducts and
+provides a recirculation path. Without it you get a spike of `V = L·di/dt`
+into the hundreds of volts, which does three things at once:
+
+1. **Arcs across the MOSFET.** It was turned off, so the drain is at whatever
+   voltage the spike drives it to. A MOSFET does not avalanche gracefully; it
+   fails short, and it fails at the moment you were trying to switch something
+   off.
+2. **Back-powers the microcontroller.** The spike couples back through the
+   FET's drain-source capacitance and up the gate resistor into the pin, where
+   the ATtiny85's clamp diodes can inject current into the dead VCC rail. This
+   is how a switching transient becomes a brown-out reboot.
+3. **Radiates.** The edge is nanoseconds wide and couples straight into the USB
+   pair, which is a differential antenna. Symptom is enumeration flapping
+   while a relay switches.
+
+The practical note: the diode slows coil release, because current now decays
+through the diode instead of collapsing instantly. Time constant is roughly
+`L / (R_coil + R_diode)`, a few milliseconds for a typical small relay, on top
+of the contact bounce already present. Irrelevant for a relay switched on human
+timescales; relevant if you are timing contact transitions. A Zener in series
+with the diode restores most of the speed at the cost of clamping to
+`VCC + Vz + Vf` instead of `VCC + Vf` — worth doing only if you have measured
+the slow release to be a problem.
 
 ## Which pin to use
 
