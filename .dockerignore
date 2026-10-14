@@ -1,0 +1,25 @@
+# The build context.
+#
+# The Dockerfile in docker/ deliberately COPYs nothing -- you bind-mount the
+# working tree into the running container instead -- but Docker still tars up
+# and sends the entire context to the daemon before it starts. Without this
+# file every `docker build` would ship .toolchain/ (160 MB of unpacked .deb
+# files) and the whole .git object store, on every single build.
+#
+# Note for the curious: a .dockerignore here does not affect `docker run -v`,
+# which mounts your real tree. It only shrinks what gets sent to the builder.
+
+.git
+.toolchain
+
+build/
+firmware/build/
+
+__pycache__/
+*.pyc
+
+# Nothing here is an input to the image. If a Dockerfile ever grows a COPY,
+# add the pattern back at that point rather than loosening this file.
+docker/
+docs/
+*.md

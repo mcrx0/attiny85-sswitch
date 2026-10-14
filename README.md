@@ -99,6 +99,7 @@ tests/        protocol_test.c (host build of the real sources), test_sswitch.py,
               hoststubs/
 docs/         protocol.md wiring.md pinout.md toolchain.md, adr/
 scripts/      bootstrap-toolchain.sh flash.sh
+docker/       Dockerfile (build/test image), README.md (building guide)
 CONTEXT.md    vocabulary
 ```
 
@@ -112,6 +113,7 @@ CONTEXT.md    vocabulary
 | [docs/wiring.md](docs/wiring.md) | relay modules, the pull-up, polarity traps, power |
 | [docs/pinout.md](docs/pinout.md) | the three channels, and why there are only three |
 | [docs/toolchain.md](docs/toolchain.md) | build, fuses, flashing, toolchain |
+| [docker/README.md](docker/README.md) | building with Docker or natively, CI, troubleshooting |
 | [tests/README.md](tests/README.md) | what the tests cover, and what only hardware can check |
 
 Design decisions, with the reasoning and what was rejected:
@@ -121,11 +123,22 @@ Design decisions, with the reasoning and what was rejected:
 
 ## Building
 
+With Docker — nothing to install on the host:
+
 ```bash
-scripts/bootstrap-toolchain.sh   # no root: unpacks into ./.toolchain
+make docker-check      # builds the image, then builds and tests the firmware in it
+```
+
+Or natively — no root, nothing installed outside this directory:
+
+```bash
+scripts/bootstrap-toolchain.sh   # unpacks into ./.toolchain
 make firmware                    # -> firmware/build/attiny85-sswitch.hex
 make test                        # host-side protocol + CLI tests
 ```
+
+Both produce byte-identical firmware: the image pins the same avr-gcc 7.3.0.
+Guide, CI recipe and troubleshooting: **[docker/README.md](docker/README.md)**.
 
 Flashing needs a Digispark with the stock micronucleus bootloader, which is
 what the factory boards ship with:

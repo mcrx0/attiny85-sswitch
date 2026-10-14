@@ -21,7 +21,8 @@ INCLUDES = -Itests/hoststubs -Ifirmware/src
 PYTHON ?= python3
 
 .PHONY: all firmware test test-protocol test-descriptors test-vendor test-cli \
-        flash size clean toolchain check
+        flash size clean toolchain check \
+        docker-build docker-check docker-firmware docker-shell docker-clean
 
 all: firmware
 
@@ -99,6 +100,51 @@ test: test-protocol test-descriptors test-vendor test-cli
 
 toolchain:
 	scripts/bootstrap-toolchain.sh
+
+# ------------------------------------------------------------------- docker --
+#
+# A toolbox image, not a builder: the Dockerfile COPYs nothing and the working
+# tree is bind-mounted in. That means no stale layer can ever disagree with your
+# checkout, and no rebuild is needed after editing a source file.
+#
+# The image is identical in both directions -- `docker-build docker-check` and
+# bare `make check` produce byte-identical firmware, because both use the same
+# avr-gcc. See docker/README.md.
+#
+DOCKER        ?= docker
+DOCKER_IMAGE  ?= attiny85-sswitch-build
+DOCKERFILE    ?= docker/Dockerfile
+
+#
+# --user with the host uid, not the image's `builder`. The mount is owned by
+# you; if the container writes as uid 1001 instead, every build product in
+# firmware/build/ ends up owned by someone else on the host and the next
+# `rm -rf` needs sudo. HOME is redirected because the host uid has no passwd
+# entry in the image.
+#
+DOCKER_RUN = $(DOCKER) run --rm \
+	--user "$(shell id -u):$(shell id -g)" \
+	-e HOME=/tmp \
+	-v "$(CURDIR):/src" -w /src \
+	$(DOCKER_IMAGE)
+
+docker-build:
+	$(DOCKER) build -t $(DOCKER_IMAGE) -f $(DOCKERFILE) .
+
+# The container equivalent of `make check`: build, budget, all four test suites.
+docker-check: docker-build
+	$(DOCKER_RUN) make check
+
+docker-firmware: docker-build
+	$(DOCKER_RUN) make firmware
+
+# Interactive. -it is deliberate; DOCKER_RUN carries neither, so it stays usable
+# from a script or CI.
+docker-shell: docker-build
+	$(DOCKER_RUN) -it bash
+
+docker-clean:
+	-$(DOCKER) rmi $(DOCKER_IMAGE)
 
 #
 # What CI should run: build, budget check, descriptor check, all tests.

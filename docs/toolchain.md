@@ -30,6 +30,18 @@ make firmware                              # uses whatever is on PATH
 PATH="$PWD/.toolchain/opt/usr/bin:$PATH" make firmware
 ```
 
+## Docker
+
+```bash
+make docker-check      # build the image, then build and test in it
+```
+
+Same toolchain, same output bytes, no bootstrap and nothing installed on the
+host. `docker/Dockerfile` pins `ubuntu:24.04` by digest and the three AVR
+packages by version, specifically so the container compiles the same firmware
+the budget above describes. Full guide, including CI, troubleshooting and why
+the obvious third-party AVR images do not work: **[docker/README.md](../docker/README.md)**.
+
 ## What you need
 
 | Tool | Used for | Provided by |
@@ -38,10 +50,16 @@ PATH="$PWD/.toolchain/opt/usr/bin:$PATH" make firmware
 | `avr-objcopy` | `.hex` and `.bin` | `binutils-avr` |
 | `avr-size` | the memory report | `binutils-avr` |
 | `avr-libc` | headers + `crt1.o` | `avr-libc` |
+| `cc` | host build of the protocol tests | `gcc` |
 | `python3` | host tool + tests | system |
 | `pyserial` | host tool | `pip install pyserial` |
 
-Version used for development: avr-gcc 7.3.0 (Atmel), binutils 2.26.
+`cc` is easy to miss: `make test-protocol` compiles `channels.c`, `proto.c` and
+`reply.c` a second time as host code, so a cross-compiler alone is not enough to
+run the tests.
+
+Version used for development: avr-gcc 7.3.0 (Atmel), binutils 2.26. The Docker
+image pins exactly these.
 
 ## V-USB
 
