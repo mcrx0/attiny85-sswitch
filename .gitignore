@@ -1,0 +1,86 @@
+# Everything build-related.
+firmware/build/
+build/
+
+# The repo-local AVR toolchain from scripts/bootstrap-toolchain.sh.
+# Unpacked .deb files, ~160 MB, entirely reproducible. The single largest
+# thing that could be committed by accident.
+.toolchain/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Build products. The extension patterns are listed as well as the build
+# directories above, so a stray avr-objcopy at the repo root is not committed.
+*.hex
+*.bin
+*.elf
+*.map
+*.o
+*.d
+*.lst
+*.su
+*.gcno
+*.gcda
+coverage.out
+
+# Editors and OS cruft. Nothing here belongs in a public repo, and several
+# of these embed the absolute path of the machine that created the file --
+# .idea/ and *.bak in particular leak your username into the tree.
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+*.rej
+\#*\#
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Secrets and local overrides. A relay controller should never need a
+# checked-in credential, and if one ever appears here it is a mistake.
+.env
+.env.*
+*.pem
+*.key
+*.crt
+secrets/
+local.mk
+
+#
+# V-USB is VENDORED, not ignored: firmware/vendor/v-usb/ is tracked so that
+# `git clone && make firmware` needs no network.
+#
+# Its nested .git is removed at vendor time and must stay removed. This is not
+# a cosmetic tidy-up: with a nested .git present, `git add` turns the whole
+# directory into a submodule gitlink (mode 160000) instead of recording the
+# driver files. The commit still succeeds and looks fine, but the files are
+# not in history, and the next clone gets an empty vendor/v-usb/ and a build
+# failure pointing at usbdrv.h. `make test-vendor` (scripts/check-vendor.sh)
+# fails loudly on that state.
+#
+# To re-vendor V-USB from upstream:
+#     git clone --depth 1 https://github.com/obdev/V-USB \
+#         firmware/vendor/v-usb
+#     rm -rf firmware/vendor/v-usb/.git \
+#            firmware/vendor/v-usb/{examples,circuits,libs-device,libs-host,tests,v-usb.xcodeproj} \
+#            firmware/vendor/v-usb/{mkdist.sh,Makefile,.gitignore,README.md}
+#     git -C firmware/vendor/v-usb rev-parse HEAD   # before removing .git
+#     # record that commit in firmware/vendor/v-usb.UPSTREAM
+#     make test-vendor
+
+

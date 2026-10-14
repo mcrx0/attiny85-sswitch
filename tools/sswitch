@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""
+sswitch - talk to an attiny85-sswitch.
+
+The device speaks terse tokens; this tool speaks to you. Everything the
+firmware understands is reachable from here, plus the English forms that the
+firmware deliberately does not implement.
+
+    sswitch on 0                # duty 255
+    sswitch dim 1 120           # duty 120
+    sswitch off 0
+    sswitch pins
+    sswitch repl                # then: switch on pin 0
+
+or, with nothing but a shell:
+
+    echo "ON 0" > /dev/ttyACM0
+
+Exit status is 0 when the device said OK, 1 when it said ERR, 2 when we
+could not talk to it at all. That is the whole contract, and it is enough to
+write `if sswitch off 0; then ...` in a script and know it worked.
+"""
+
+import argparse
+import glob
+import sys
+
+try:
+    import serial
+except ImportError:
+    sys.exit("sswitch needs pyserial: pip install pyserial")
+
+# obdev's shared CDC-ACM pair. See firmware/vendor/v-usb/usbdrv/
+# USB-IDs-for-free.txt -- if you change USB_CFG_VENDOR_ID/USB_CFG_DEVICE_ID
+# in usbconfig.h, change them here too.
+VID = 0x16C0
+PID = 0x05E1
+
+DEFAULT_TIMEOUT = 1.0
+
+
+# --------------------------------------------------------------- finding ----
+
+def discover(explicit=None):
+    """Return a port path, or None."""
+    if explicit:
+        return explicit
+
+    # Match on VID/PID as well as the path. With several switches plugged in
+    # you want to be able to say which one.
+    try:
+        from serial.tools import list_ports
+
+        for p in list_ports.comports():
+            if p.vid == VID and p.pid == PID:
+                return p.device
+    except Exception:
+        pass
+
+    # Fall back to any ttyACM. Better a wrong device than none, and the
+    # STATUS command tells you what you actually got.
+    found = sorted(glob.glob("/dev/ttyACM*"))
+    return found[0] if found else None
+
+
+def open_port(path, timeout):
+    # Baud is meaningless for CDC -- there is no UART behind the interface
+    # and the device ignores SET_LINE_CODING. We still open at 9600 because
+    # pyserial wants a number, and because it is the value the device
+    # reports back from GET_LINE_CODING.
+    return serial.Serial(path, 9600, timeout=timeout, write_timeout=timeout)
+
+
+def explain_port_error(path, e):
+    """
+    Turn a pyserial exception into one line that says what to do.
+
+    pyserial embeds the errno text a second time inside its own message, so
+    printing the exception directly repeats itself. The three failures people
+    actually hit are: not plugged in, another program has it, and not in
+    dialout.
+    """
+    text = str(e)
+    low = text.lower()
+
+    if "access is denied" in low or "permission denied" in low:
+        return (f"permission denied opening {path}.\n"
+                "  Add yourself to the dialout group, then log out and back in:\n"
+                "    sudo usermod -aG dialout $USER")
+
+    if "resource temporarily unavailable" in low or "device or resource busy" in low:
+        return (f"{path} is in use by another program.\n"
+                "  Close minicom, screen, or a stuck REPL and try again.")
+
+    if "no such file" in low:
+        return f"{path} does not exist. Is the device plugged in?"
+
+    return f"could not open {path}: {text}"
+
+
+# ---------------------------------------------------------------- talking --
+
+def send(sock, line, timeout=DEFAULT_TIMEOUT):
+    """Send one protocol line, return the device's reply line."""
+    sock.write((line + "\n").encode("ascii"))
+    sock.flush()
+    return wait_for_line(sock, timeout)
+
+
+def is_error(reply):
+    """
+    A reply is a failure only if the device said ERR, or said nothing.
+
+    PINS, STATUS and HELP answer with data rather than OK, so keying off the
+    "OK" prefix would report every successful query as a failure.
+    """
+    return (not reply) or reply.startswith("ERR")
+
+
+def wait_for_line(sock, timeout):
+    """
+    Read until a newline, or the socket gives up.
+
+    The device answers in 8-byte USB packets with a 10 ms poll interval, so a
+    108-byte HELP line takes about 140 ms to arrive. A short timeout would
+    truncate it and look like a protocol bug rather than a timeout, so wait
+    generously and treat silence as silence.
+    """
+    deadline = timeout if timeout else DEFAULT_TIMEOUT
+    got = b""
+    while b"\n" not in got:
+        try:
+            chunk = sock.readline()
+        except serial.SerialTimeoutException:
+            break
+        if not chunk:
+            break
+        got += chunk
+    return got.decode("ascii", "replace").strip()
+
+
+# --------------------------------------------------------------- English ---
+
+# English lives here, not in the firmware. "switch on pin 0" costs the device
+# nothing to support because the device never sees it.
+VERBS = {
+    "on": "ON",
+    "off": "OFF",
+    "high": "HIGH",
+    "low": "LOW",
+    "in": "IN",
+    "out": "OUT",
+    "read": "READ",
+    "pins": "PINS",
+    "status": "STATUS",
+    "help": "HELP",
+    "raw": "RAW",
+    "query": "PINS",
+    "read": "READ",
+    "dim": "ON",   # "dim 1 120" is "ON 1 120"; a dimmer is just a duty
+    "brightness": "ON",
+}
+
+
+def translate(line):
+    """English (or protocol) -> protocol. Returns None for a blank line."""
+    tokens = line.strip().lower().split()
+    if not tokens:
+        return None
+
+    if tokens[0] == "switch":
+        tokens = tokens[1:]
+    if not tokens:
+        return None
+
+    # "all off" is two words and does not fit the verb/args shape.
+    if len(tokens) == 2 and tokens[0] == "all" and tokens[1] == "off":
+        return "ALL OFF"
+
+    # "on pin 0" and "on 0" mean the same thing.
+    tokens = [t for t in tokens if t != "pin"]
+    if not tokens:
+        return None
+
+    head = tokens[0]
+
+    # Anything we do not recognise is passed through untouched, so an
+    # unlisted but valid protocol command is still reachable. Upper-cased,
+    # because the firmware is case-insensitive and this way at least the
+    # wire looks deliberate.
+    if head not in VERBS:
+        return " ".join(t.upper() for t in tokens)
+
+    out = [VERBS[head]]
+    out.extend(tokens[1:])
+    return " ".join(out)
+
+
+# ------------------------------------------------------------------ main ---
+
+def run_one(sock, command, timeout=DEFAULT_TIMEOUT):
+    reply = send(sock, command, timeout)
+    if not reply:
+        print("(no reply -- is the device still plugged in?)", file=sys.stderr)
+    else:
+        print(reply)
+    return 1 if is_error(reply) else 0
+
+
+def repl(sock, timeout=DEFAULT_TIMEOUT):
+    print("attiny85-sswitch. 'switch on pin 0', 'off 0', 'pins', 'exit'.",
+          file=sys.stderr)
+    print("Commands are set-state, never toggle: a repeated command is safe.",
+          file=sys.stderr)
+
+    while True:
+        # Banner, prompt and echo all go to stderr, so stdout carries only
+        # command output. That keeps `sswitch repl` pipeable and stops the
+        # greeting from ending up in the middle of captured output.
+        print("switch> ", end="", file=sys.stderr, flush=True)
+        try:
+            line = input()
+        except (EOFError, KeyboardInterrupt):
+            print(file=sys.stderr)
+            return 0
+
+        low = line.strip().lower()
+        if low in ("exit", "quit", "q"):
+            return 0
+
+        command = translate(line)
+        if command is None:
+            continue
+
+        # We echo, because the device never does and a terminal opened on a
+        # raw port has echo turned off.
+        print(f"  -> {command}", file=sys.stderr)
+        reply = send(sock, command, timeout)
+        if not reply:
+            # Say so and stop. Re-prompting into a device that has stopped
+            # answering just produces a screenful of "(no reply)".
+            print("  (no reply -- the device stopped answering)", file=sys.stderr)
+            return 2
+        print(f"  {reply}", file=sys.stderr)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="sswitch",
+        description="control an attiny85-sswitch",
+        epilog="Anything the firmware understands is reachable with `raw`.",
+    )
+    ap.add_argument("--port", help="serial device (default: autodetect)")
+    ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
+                    help="seconds to wait for a reply (default: %(default)s)")
+    sub = ap.add_subparsers(dest="cmd")
+
+    def pin_args(p):
+        p.add_argument("pin", help="0, 1 or 2")
+
+    pin_args(sub.add_parser("on", help="duty 255 (full on)"))
+    d = sub.add_parser("dim", help="PWM duty 1-255")
+    d.add_argument("pin"); d.add_argument("duty", type=int)
+    pin_args(sub.add_parser("off", help="duty 0"))
+    pin_args(sub.add_parser("high", help="raw level HIGH, PWM off"))
+    pin_args(sub.add_parser("low", help="raw level LOW, PWM off"))
+    pin_args(sub.add_parser("in", help="pin becomes an input"))
+    pin_args(sub.add_parser("out", help="pin becomes an output, off"))
+    pin_args(sub.add_parser("read", help="actual level back"))
+
+    p = sub.add_parser("pins", help="every channel")
+    p.add_argument("--raw", action="store_true", help="machine-readable")
+
+    sub.add_parser("all-off", help="every channel off")
+    sub.add_parser("status", help="firmware identity")
+    sub.add_parser("help", help="the device's own help")
+    sub.add_parser("list", help="list candidate ports")
+
+    r = sub.add_parser("raw", help="send a protocol line verbatim")
+    r.add_argument("line")
+    sub.add_parser("repl", help="interactive")
+
+    args = ap.parse_args(argv)
+
+    if args.cmd == "list":
+        try:
+            from serial.tools import list_ports
+
+            found = list(list_ports.comports())
+        except Exception:
+            found = []
+        if not found:
+            print("no serial ports found")
+            return 2
+        for p in found:
+            mark = "*" if (p.vid == VID and p.pid == PID) else " "
+            ident = f"{p.vid:04x}:{p.pid:04x}" if p.vid else "????:????"
+            print(f"{mark} {p.device:20s} {ident}  {p.description}")
+        return 0
+
+    if not args.cmd:
+        ap.print_help()
+        return 2
+
+    port = discover(args.port)
+    if not port:
+        print("no attiny85-sswitch found (looked for VID:PID %04x:%04x)"
+              % (VID, PID), file=sys.stderr)
+        print("plug it in, or name the port with --port", file=sys.stderr)
+        return 2
+
+    try:
+        sock = open_port(port, args.timeout)
+    except Exception as e:
+        print(explain_port_error(port, e), file=sys.stderr)
+        return 2
+
+    try:
+        if args.cmd == "repl":
+            return repl(sock, args.timeout)
+
+        if args.cmd == "raw":
+            return run_one(sock, args.line, args.timeout)
+
+        if args.cmd == "dim":
+            return run_one(sock, f"ON {args.pin} {args.duty}", args.timeout)
+
+        if args.cmd == "all-off":
+            return run_one(sock, "ALL OFF", args.timeout)
+
+        if args.cmd == "pins":
+            line = "PINS --RAW" if args.raw else "PINS"
+            return run_one(sock, line, args.timeout)
+
+        # on, off, high, low, in, out, read, status, help
+        if args.cmd == "status":
+            return run_one(sock, "STATUS", args.timeout)
+        if args.cmd == "help":
+            return run_one(sock, "HELP", args.timeout)
+        return run_one(sock, f"{args.cmd.upper()} {args.pin}", args.timeout)
+    finally:
+        sock.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
