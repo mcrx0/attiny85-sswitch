@@ -69,12 +69,15 @@ consequences worth knowing:
   to extract. `firmware/build/attiny85-sswitch.hex` is right there afterwards,
   ready for `make flash`.
 
-`make` passes `--user "$(id -u):$(id -g)"`. The image has a `builder` user at
-uid 1000, but if the container wrote build products as a uid that is not yours
-on the host, every file in `firmware/build/` would belong to somebody else and
-cleaning up would need `sudo`. Passing your host uid keeps ownership correct on
-any machine, whatever uid you happen to have. `HOME` is redirected to `/tmp` for
-the same reason: your uid has no passwd entry inside the image.
+`make` passes `--user "$(id -u):$(id -g)"`. The image itself has a `builder`
+user, but it is **not** uid 1000 — `ubuntu:24.04` already ships an `ubuntu` user
+at 1000, so `builder` lands on 1001. Neither matters, because the uid is
+passed explicitly rather than inherited. What does matter is that it is passed
+at all: the bind mount is owned by you on the host, so a container writing as
+any other uid would leave every file in `firmware/build/` owned by somebody
+else and make `rm -rf` need `sudo`. Passing your host uid keeps ownership
+correct whatever uid you happen to have. `HOME` is redirected to `/tmp` for the
+same reason: your uid has no passwd entry inside the image.
 
 ## Parity
 

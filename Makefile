@@ -116,17 +116,29 @@ DOCKER_IMAGE  ?= attiny85-sswitch-build
 DOCKERFILE    ?= docker/Dockerfile
 
 #
-# --user with the host uid, not the image's `builder`. The mount is owned by
-# you; if the container writes as uid 1001 instead, every build product in
-# firmware/build/ ends up owned by someone else on the host and the next
-# `rm -rf` needs sudo. HOME is redirected because the host uid has no passwd
-# entry in the image.
+# --user with the host uid, not whatever the image defaults to. The mount is
+# owned by you; a container writing as any other uid leaves every build product
+# in firmware/build/ owned by somebody else on the host, and the next rm -rf
+# needs sudo. HOME is redirected because the host uid has no passwd entry in
+# the image.
 #
-DOCKER_RUN = $(DOCKER) run --rm \
+DOCKER_ARGS = \
 	--user "$(shell id -u):$(shell id -g)" \
 	-e HOME=/tmp \
-	-v "$(CURDIR):/src" -w /src \
-	$(DOCKER_IMAGE)
+	-v "$(CURDIR):/src" -w /src
+
+#
+# Flags must precede the image name. Everything after it is the command to run
+# inside the container, so `$(DOCKER_RUN) -it bash` does not ask for an
+# interactive terminal -- it asks the container to exec a program literally
+# named "-it", and fails with:
+#     exec: "-it": executable file not found in $PATH
+# Hence two variables rather than one with the flag tacked on: the flag belongs
+# in the flags, and keeping the shared part in DOCKER_ARGS stops the two forms
+# from drifting apart.
+#
+DOCKER_RUN     = $(DOCKER) run --rm $(DOCKER_ARGS) $(DOCKER_IMAGE)
+DOCKER_RUN_TTY = $(DOCKER) run --rm -it $(DOCKER_ARGS) $(DOCKER_IMAGE)
 
 docker-build:
 	$(DOCKER) build -t $(DOCKER_IMAGE) -f $(DOCKERFILE) .
@@ -138,10 +150,10 @@ docker-check: docker-build
 docker-firmware: docker-build
 	$(DOCKER_RUN) make firmware
 
-# Interactive. -it is deliberate; DOCKER_RUN carries neither, so it stays usable
-# from a script or CI.
+# Interactive, so it needs a TTY and is no use from CI. DOCKER_RUN carries no
+# -it precisely so the other targets stay scriptable.
 docker-shell: docker-build
-	$(DOCKER_RUN) -it bash
+	$(DOCKER_RUN_TTY) bash
 
 docker-clean:
 	-$(DOCKER) rmi $(DOCKER_IMAGE)
